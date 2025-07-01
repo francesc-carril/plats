@@ -1,0 +1,87 @@
+from flask import Flask, request, render_template_string, send_file
+import pandas as pd
+from datetime import date, timedelta
+from collections import defaultdict
+import tempfile
+import random
+
+app = Flask(__name__)
+
+HTML_FORM = """
+<!doctype html>
+<title>Generador de Menús</title>
+<h1>Genera un menú mensual</h1>
+<form action="/generate" method=post enctype=multipart/form-data>
+  <p><input type=file name=plats>
+     <input type=submit value=Generar>
+</form>
+"""
+
+@app.route("/", methods=["GET"])
+def upload_file():
+    return render_template_string(HTML_FORM)
+
+@app.route("/generate", methods=["POST"])
+def generate_menu():
+    file = request.files['plats']
+    df = pd.read_excel(file)
+
+    df.columns = df.columns.str.strip().str.upper()
+    bool_columns = ['DINAR', 'SOPAR', 'ESTIU', 'HIVERN', 'PRIMER', 'SEGON', 'DISSABTE', 'DIUMENGE']
+    df[bool_columns] = df[bool_columns].applymap(lambda x: True if str(x).strip().lower() == 'x' else False)
+
+    df = df[df['ESTIU'] == True]
+
+    categoria_mapping = {
+        'llegum': 'llegum', 'pasta': 'pasta', 'ou': 'ou', 'peix': 'peix',
+        'carn': 'carn', 'amanida': 'vegetarià', 'sopa': 'sopa', 'verdures': 'vegetarià'
+    }
+
+    tipus_apats = ['Dinar', 'Sopar']
+    start_date = date(2025, 7, 1)
+    end_date = date(2025, 7, 31)
+    delta = timedelta(days=1)
+
+    menus_juliol = []
+    historial_usats = set()
+    categoria_historial = defaultdict(int)
+
+    dia_actual = start_date
+    while dia_actual <= end_date:
+        dia_catala = dia_actual.strftime('%A').capitalize()
+        for apat in tipus_apats:
+            primers = df[(df['PRIMER']) & (df[apat.upper()]) & (~df['PLAT'].isin(historial_usats))]
+            segons = df[(df['SEGON']) & (df[apat.upper()]) & (~df['PLAT'].isin(historial_usats))]
+
+            def tria_plat(df_filtrat):
+                candidats = df_filtrat.sample(frac=1).to_dict('records')
+                for plat in candidats:
+                    cat = plat['CATEGORIA'].strip().lower()
+                    grup = categoria_mapping.get(cat, cat)
+                    if categoria_historial[grup] < 10:
+                        categoria_historial[grup] += 1
+                        historial_usats.add(plat['PLAT'])
+                        return plat['PLAT']
+                return "Cap disponible"
+
+            plat1 = tria_plat(primers)
+            plat2 = tria_plat(segons)
+            menus_juliol.append({
+                'Data': dia_actual.isoformat(),
+                'Dia': dia_catala,
+                'Àpat': apat,
+                'Primer plat': plat1,
+                'Segon plat': plat2
+            })
+
+        dia_actual += delta
+
+    result_df = pd.DataFrame(menus_juliol)
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    result_df.to_excel(tmp_file.name, index=False)
+    tmp_file.close()
+
+    return send_file(tmp_file.name, as_attachment=True, download_name="menu_juliol.xlsx")
+
+if __name__ == "__main__":
+    app.run(debug=True, host='0.0.0.0', port=8000)
